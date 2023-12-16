@@ -1,0 +1,262 @@
+---
+title: "P8130_Final_Project"
+author: "Zilin Huang"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(vtable)
+library(MASS)
+library(corrplot)
+library(glmnet)
+```
+
+```{r}
+data = read.csv("./Project_2_data.csv") |>
+  mutate(
+    Race = case_match(
+      Race,
+      "White" ~ 0,
+      "Black" ~ 1,
+      "Other" ~ 2
+  ),
+  Marital.Status = case_match(
+      Marital.Status,
+      "Married" ~ 0,
+      "Divorced" ~ 1,
+      "Single " ~ 2,
+      "Widowed" ~ 3,
+      "Separated" ~ 4
+  ),
+  T.Stage = case_match(
+      T.Stage,
+      "T1" ~ 0,
+      "T2" ~ 1,
+      "T3" ~ 2,
+      "T4" ~ 3
+  ),
+  N.Stage = case_match(
+      N.Stage,
+      "N1" ~ 0,
+      "N2" ~ 1,
+      "N3" ~ 2
+  ),
+  X6th.Stage = case_match(
+      X6th.Stage,
+      "IIA" ~ 0,
+      "IIIA" ~ 1,
+      "IIIC" ~ 2,
+      "IIB" ~ 3,
+      "IIIB" ~ 4
+  ),
+  differentiate = case_match(
+      differentiate,
+      "Poorly differentiated" ~ 0,
+      "Moderately differentiated" ~ 1,
+      "Well differentiated" ~ 2,
+      "Undifferentiated" ~ 3
+  ),
+  A.Stage = case_match(
+      A.Stage,
+      "Regional" ~ 0,
+      "Distant" ~ 1,
+  ),
+  Estrogen.Status = case_match(
+      Estrogen.Status,
+      "Negative" ~ 0,
+      "Positive" ~ 1,
+  ),
+  Progesterone.Status = case_match(
+      Progesterone.Status,
+      "Negative" ~ 0,
+      "Positive" ~ 1,
+  ),
+  Grade = case_match(
+    Grade,
+    "1" ~ 1,
+    "2" ~ 2,
+    "3" ~ 3,
+    " anaplastic; Grade IV" ~ 4
+  )
+  ) 
+```
+
+Include a descriptive table with summary statistics for all variables.
+
+```{r}
+st(data)
+```
+
+Explore the distribution of the outcome and consider potential transformations (if necessary):
+
+`Tumor.Size` needs log transformation:
+
+```{r}
+fit1 = lm(Survival.Months ~ Tumor.Size, data = data)
+boxcox(fit1, lambda = seq(-3, 3, by = 0.25))
+
+data =
+  data |> 
+  mutate(Tumor.Size = log(Tumor.Size))
+
+data |>
+  ggplot(aes(x=Tumor.Size)) + geom_histogram()
+```
+
+Examine the pairwise relationship between the independent variables 1-14.
+
+```{r}
+# pairs(data[, -((ncol(data)-1):ncol(data))])
+cor(data[, -((ncol(data)-1):ncol(data))])
+corrplot(cor(data[, -((ncol(data)-1):ncol(data))]), type = "upper", diag = FALSE)
+```
+
+`Regional.Node.Positive` and `N.Stage`, `Tumor.Size` and `T.Stage`, `Differentiate` and `Grade` are highly linearly correlated, and we choose to manually filter out one variables from each of the three paris for the regression modeling process.
+
+### Model Against Survival Months
+
+```{r}
+# The filtering step
+data_lin = data |>
+  dplyr::select(-Status, -Regional.Node.Examined, -T.Stage, -Grade)
+```
+
+First model is based on Forward Selection.
+
+```{r}
+mult.fit <- lm(Survival.Months ~ ., data = data_lin)
+intercept_only <- lm (Survival.Months ~ 1, data = data_lin)
+lin_1 <- step(intercept_only, direction = "forward", scope = formula(mult.fit))
+```
+```{r}
+par(mfrow = c(2,2))
+plot(lin_1)
+```
+
+Second model is based on LASSO.
+
+```{r}
+lambda_seq <- 10^seq(-3, 0, by = .1)
+set.seed(2022)
+cv_object <- cv.glmnet(as.matrix(data_lin[,1:11]), data_lin$Survival.Months,lambda = lambda_seq, nfolds = 5)
+
+lin_2 <- glmnet(as.matrix(data_lin[,1:11]), data_lin$Survival.Months, lambda = cv_object$lambda.min)
+coef(lin_2)
+```
+
+Third model is based on variables with demographic information, with their interaction terms added.
+
+```{r}
+lin_3 <- lm(Survival.Months ~ Age + Race + Marital.Status + Age*Race + Age*Marital.Status + Race*Marital.Status + Age*Race*Marital.Status, data = data_lin)
+summary(lin_3)
+
+anova(lin_3)
+```
+
+```{r}
+# Improved 
+lin_3_0 <- lm(Survival.Months ~ Race + Marital.Status + Race*Marital.Status, data = data_lin)
+```
+
+```{r}
+par(mfrow = c(2,2))
+plot(lin_3_0)
+```
+
+Fourth model is based on various Physiological indicators, filtered by ANOVA comparisons.
+
+```{r}
+# prefer lin_4_0 without X6th.Stage
+lin_4 <- lm(Survival.Months ~ N.Stage + X6th.Stage + A.Stage + Tumor.Size + differentiate, data = data_lin)
+summary(lin_4_0)
+
+lin_4_0 <- lm(Survival.Months ~ N.Stage + A.Stage + Tumor.Size + differentiate, data = data_lin)
+```
+
+```{r}
+# Still prefer lin_4_0
+lin_4_1 <- lm(Survival.Months ~ N.Stage + A.Stage + Tumor.Size + Reginol.Node.Positive, data = data_lin)
+
+anova(lin_4_0, lin_4_1)
+```
+
+```{r}
+# Prefer lin_4_2
+lin_4_2 <- lm(Survival.Months ~ N.Stage + A.Stage + Tumor.Size + factor(Estrogen.Status), data = data_lin)
+
+anova(lin_4_0, lin_4_2)
+```
+
+```{r}
+# Still prefer lin_4_2
+lin_4_3 <- lm(Survival.Months ~ N.Stage + A.Stage + Tumor.Size + factor(Estrogen.Status) + factor(Progesterone.Status), data = data_lin)
+
+anova(lin_4_2, lin_4_3)
+```
+```{r}
+par(mfrow = c(2,2))
+plot(lin_4_2)
+```
+
+### Model Against Status (Logistic Regression)
+
+```{r}
+data_log = data |>
+  dplyr::select(-Survival.Months, -Regional.Node.Examined, -T.Stage, -Grade) |>
+  mutate(Status = as.factor(Status))
+```
+
+```{r}
+# Basic logistic regression model
+full_model <- glm(Status ~ ., data = data_log, family = binomial)
+summary(full_model)
+
+stepwise_model <- stepAIC(full_model, direction = "both")
+summary(stepwise_model)
+```
+
+```{r}
+library(car)
+vif(full_model)
+vif(stepwise_model)
+```
+
+```{r}
+par(mfrow = c(2, 2))
+plot(full_model)
+```
+
+
+```{r}
+# Predict probabilities
+probabilities <- predict(full_model, type = "response")
+```
+
+```{r}
+# ROC Curve
+library(pROC)
+roc_curve <- roc(data_log$Status, probabilities)
+auc(roc_curve)
+plot(roc_curve)
+```
+
+
+
+
+```{r}
+#这个地方等之后模型出来了在搞
+# Create subsets of data based on race
+data_white <- subset(data_log, Race == 0)
+data_black <- subset(data_log, Race == 1)
+
+# Fit models on each subset and compare
+model_white <- glm(Status ~ ., data = data_white, family = binomial)
+model_black <- glm(Status ~ ., data = data_black, family = binomial)
+summary(model_white)
+summary(model_black)
+
+```
